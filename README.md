@@ -22,7 +22,7 @@ With a multiprocess and queue this cut be cut further.
 ***load_images_mode=0***
 
 * Can train with unlimited number of larger images.
-* Nearly matches speed to preloading on GPUs on small images with 10 workers. Single process PIL requires ~35ms/Mpix increasing linearly with size. Multiprocessing may be bottlenecked at some image size but as training loop time increases quadratically with image size, above 10Mpix loading from disk is again usable.
+*Single process PIL requires ~35ms/Mpix increasing linearly with size. When multiprocessed images of 1MPix and smaller load at competitive speeds, but even though training iteration increases quadratically loading bottlenecks slow this method wrt to h5 by ~50%.
 
 ### load into GPU: original default
 ***load_images_mode=1*** orignal code, store to memory.
