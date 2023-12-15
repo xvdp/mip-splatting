@@ -22,9 +22,15 @@ class Scene:
 
     gaussians : GaussianModel
 
-    def __init__(self, args : ModelParams, gaussians : GaussianModel, load_iteration=None, shuffle=True, resolution_scales=[1.0]):
+    def __init__(self, args : ModelParams, gaussians : GaussianModel, load_iteration=None,
+                 shuffle=True, resolution_scales=[1.0], load_images_mode=1):
         """b
         :param path: Path to colmap scene main folder.
+        low-memory args added:
+            load_images_mode: (0,1,2)
+                1 original default behaviour, load image to gpu
+                if 2, h5 file is created, image shape is passed to cameras
+                if 0, load on taining, image shape passed to cameras
         """
         self.model_path = args.model_path
         self.loaded_iter = None
@@ -41,13 +47,17 @@ class Scene:
         self.test_cameras = {}
 
         if os.path.exists(os.path.join(args.source_path, "sparse")):
-            scene_info = sceneLoadTypeCallbacks["Colmap"](args.source_path, args.images, args.eval)
+            scene_info = sceneLoadTypeCallbacks["Colmap"](args.source_path, args.images, args.eval,
+                                                          load_images_mode=load_images_mode)
         elif os.path.exists(os.path.join(args.source_path, "transforms_train.json")):
             print("Found transforms_train.json file, assuming Blender data set!")
-            scene_info = sceneLoadTypeCallbacks["Blender"](args.source_path, args.white_background, args.eval)
+            scene_info = sceneLoadTypeCallbacks["Blender"](args.source_path, args.white_background, args.eval,
+                                                           load_images_mode=load_images_mode)
         elif os.path.exists(os.path.join(args.source_path, "metadata.json")):
             print("Found metadata.json file, assuming multi scale Blender data set!")
-            scene_info = sceneLoadTypeCallbacks["Multi-scale"](args.source_path, args.white_background, args.eval, args.load_allres)
+            scene_info = sceneLoadTypeCallbacks["Multi-scale"](args.source_path, args.white_background,
+                                                               args.eval, args.load_allres,
+                                                               load_images_mode=load_images_mode)
         else:
             assert False, "Could not recognize scene type!"
 

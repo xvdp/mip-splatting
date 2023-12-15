@@ -11,17 +11,20 @@
 
 import os
 import sys
-from PIL import Image
-from typing import NamedTuple
-from scene.colmap_loader import read_extrinsics_text, read_intrinsics_text, qvec2rotmat, \
-    read_extrinsics_binary, read_intrinsics_binary, read_points3D_binary, read_points3D_text
-from utils.graphics_utils import getWorld2View2, focal2fov, fov2focal
-import numpy as np
 import json
 from pathlib import Path
+from typing import NamedTuple
+import math
+import numpy as np
+from PIL import Image
 from plyfile import PlyData, PlyElement
-from utils.sh_utils import SH2RGB
+
+from scene.colmap_loader import read_extrinsics_text, read_intrinsics_text, qvec2rotmat, \
+    read_extrinsics_binary, read_intrinsics_binary, read_points3D_binary, read_points3D_text
 from scene.gaussian_model import BasicPointCloud
+from utils.graphics_utils import getWorld2View2, focal2fov, fov2focal
+from utils.sh_utils import SH2RGB
+from utils.h5 import get_images_db, h5_imagesdb_add, LoadMode
 
 class CameraInfo(NamedTuple):
     uid: int
@@ -65,7 +68,21 @@ def getNerfppNorm(cam_info):
 
     return {"translate": translate, "radius": radius}
 
-def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder):
+def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder, load_images_mode=1):
+    """
+    low-memory branch args added:
+        load_images_mode: 0 load on training loop, 1, load to gpu, 2, create h5
+
+    """
+    print(f"reading colmap cameras with imag load mode {LoadMode(load_images_mode)}")
+    if load_images_mode == 2: # create or load h5 file
+        h5db, created_anew = get_images_db(images_folder, count=len(cam_extrinsics))
+        _size = os.stat(h5db).st_size
+        _bitshift = min(40, (math.floor(math.log2(_size)) // 10 )*10)
+        _units  = {10:'KB', 20:'MB', 30:'GB', 40:'TB'}
+        _new = "New " if created_anew else "Existing"
+        print(f"{_new} h5 file {h5db} {_size >> _bitshift} {_units[_bitshift]}")
+
     cam_infos = []
     for idx, key in enumerate(cam_extrinsics):
         sys.stdout.write('\r')
@@ -92,14 +109,21 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder):
             FovY = focal2fov(focal_length_y, height)
             FovX = focal2fov(focal_length_x, width)
         else:
-            assert False, "Colmap camera model not handled: only undistorted datasets (PINHOLE or SIMPLE_PINHOLE cameras) supported!"
+            assert False, "Colmap camera model not handled:\
+                only undistorted datasets (PINHOLE or SIMPLE_PINHOLE cameras) supported!"
 
         image_path = os.path.join(images_folder, os.path.basename(extr.name))
         image_name = os.path.basename(image_path).split(".")[0]
+
         image = Image.open(image_path)
+        if load_images_mode != 1:
+            image = image.size
+            if load_images_mode == 2 and created_anew:
+                h5_imagesdb_add(image_path, h5db, idx)
 
         cam_info = CameraInfo(uid=uid, R=R, T=T, FovY=FovY, FovX=FovX, image=image,
-                              image_path=image_path, image_name=image_name, width=width, height=height)
+                              image_path=image_path, image_name=image_name, width=width,
+                              height=height)
         cam_infos.append(cam_info)
     sys.stdout.write('\n')
     return cam_infos
@@ -129,7 +153,7 @@ def storePly(path, xyz, rgb):
     ply_data = PlyData([vertex_element])
     ply_data.write(path)
 
-def readColmapSceneInfo(path, images, eval, llffhold=8):
+def readColmapSceneInfo(path, images, eval, llffhold=8, load_images_mode=1):
     try:
         cameras_extrinsic_file = os.path.join(path, "sparse/0", "images.bin")
         cameras_intrinsic_file = os.path.join(path, "sparse/0", "cameras.bin")
@@ -142,7 +166,10 @@ def readColmapSceneInfo(path, images, eval, llffhold=8):
         cam_intrinsics = read_intrinsics_text(cameras_intrinsic_file)
 
     reading_dir = "images" if images == None else images
-    cam_infos_unsorted = readColmapCameras(cam_extrinsics=cam_extrinsics, cam_intrinsics=cam_intrinsics, images_folder=os.path.join(path, reading_dir))
+    cam_infos_unsorted = readColmapCameras(cam_extrinsics=cam_extrinsics,
+                                           cam_intrinsics=cam_intrinsics,
+                                           images_folder=os.path.join(path, reading_dir),
+                                           load_images_mode=load_images_mode)
     cam_infos = sorted(cam_infos_unsorted.copy(), key = lambda x : x.image_name)
 
     if eval:
@@ -176,7 +203,12 @@ def readColmapSceneInfo(path, images, eval, llffhold=8):
                            ply_path=ply_path)
     return scene_info
 
-def readCamerasFromTransforms(path, transformsfile, white_background, extension=".png"):
+def readCamerasFromTransforms(path, transformsfile, white_background, extension=".png",
+                              load_images_mode=1):
+    """TODO add load_images_mode
+    """
+    if load_images_mode != 1:
+        raise NotImplementedError("TODO: h5 or dataloader, only load to memory supported for this method")
     cam_infos = []
 
     with open(os.path.join(path, transformsfile)) as json_file:
@@ -214,11 +246,17 @@ def readCamerasFromTransforms(path, transformsfile, white_background, extension=
             FovX = fovx
 
             cam_infos.append(CameraInfo(uid=idx, R=R, T=T, FovY=FovY, FovX=FovX, image=image,
-                            image_path=image_path, image_name=image_name, width=image.size[0], height=image.size[1]))
-            
+                             image_path=image_path, image_name=image_name, width=image.size[0],
+                             height=image.size[1]))
+
     return cam_infos
 
-def readNerfSyntheticInfo(path, white_background, eval, extension=".png"):
+def readNerfSyntheticInfo(path, white_background, eval, extension=".png", load_images_mode=1):
+    """TODO add load_images_mode
+    """
+    if load_images_mode != 1:
+        raise NotImplementedError("TODO: h5 or dataloader, only load to memory supported for this method")
+
     print("Reading Training Transforms")
     train_cam_infos = readCamerasFromTransforms(path, "transforms_train.json", white_background, extension)
     print("Reading Test Transforms")
@@ -254,7 +292,12 @@ def readNerfSyntheticInfo(path, white_background, eval, extension=".png"):
                            ply_path=ply_path)
     return scene_info
 
-def readMultiScale(path, white_background,split, only_highres=False):
+def readMultiScale(path, white_background,split, only_highres=False, load_images_mode=1):
+    """TODO add load_images_mode
+    """
+    if load_images_mode != 1:
+        raise NotImplementedError("TODO: h5 or dataloader, only load to memory supported for this method")
+
     cam_infos = []
     
     print("read split:", split)
@@ -300,7 +343,12 @@ def readMultiScale(path, white_background,split, only_highres=False):
     return cam_infos
 
 
-def readMultiScaleNerfSyntheticInfo(path, white_background, eval, load_allres=False):
+def readMultiScaleNerfSyntheticInfo(path, white_background, eval, load_allres=False, load_images_mode=1):
+    """TODO add load_images_mode
+    """
+    if load_images_mode != 1:
+        raise NotImplementedError("TODO: h5 or dataloader, only load to memory supported for this method")
+
     print("Reading train from metadata.json")
     train_cam_infos = readMultiScale(path, white_background, "train", only_highres=(not load_allres))
     print("number of training images:", len(train_cam_infos))

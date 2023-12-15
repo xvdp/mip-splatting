@@ -1,6 +1,35 @@
 <p align="center">
-
   <h1 align="center">Mip-Splatting: Alias-free 3D Gaussian Splatting</h1>
+
+## low_memory branch: xvdp
+Mip Splatting (as Gaussian Splatting original) codes load all images in gpu memory allowing only to train with limited number and size of images.  
+
+This branch -- similarly to https://github.com/xvdp/gaussian-splatting implements 2 alternative ways of loading images. Via torch dataloader and with a memory map h5 file. This ois useful on large image datasets(e.g. SonyAR7V shoots ~ 61Mpix images), and/or with large number of images.
+
+mip-splatting trining iteration average for the first 1000 iterations on the tested system (Razer Laptop w/ 16GB RTX3080) is approx 50ms/it for 1Mpix files increasing quadratically, 350ms/it for 3.8Mpix files 3.4s/it for 14Mpix files. It is not clear that data from larger images are taken advandage for training.
+
+### h5 memory mapped dataset 
+***load_images_mode=2***
+This branch defaults to creating a .h5 file and loading slices from it.
+
+* Can train with unlimited number of larger images. 
+* Requires disk space -e.g. A pyramid of 2000 8bit images with highest dimension ~(9600, 6400) requires 480 GB of disk.
+* Nearly matches speed to preloading on GPUs on small images. Slicing from h5 is: ~5ms/Mpix,increasing linearly with size.
+
+With a multiprocess and queue this cut be cut further.
+
+### torch Dataset/Dataloader 
+***load_images_mode=0***
+
+* Can train with unlimited number of larger images.
+* Nearly matches speed to preloading on GPUs on small images with 10 workers. Single process PIL requires ~35ms/Mpix increasing linearly with size. Multiprocessing may be bottlenecked at some image size but as training loop time increases quadratically with image size, above 10Mpix loading from disk is again usable.
+
+### load into GPU: original default
+***load_images_mode=1*** orignal code, store to memory.
+
+------------
+
+
   <p align="center">
     <a href="https://niujinshuchong.github.io/">Zehao Yu</a>
     ·

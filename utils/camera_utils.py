@@ -17,7 +17,10 @@ from utils.graphics_utils import fov2focal
 WARNED = False
 
 def loadCam(args, id, cam_info, resolution_scale):
-    orig_w, orig_h = cam_info.image.size
+    if isinstance(cam_info.image, tuple): # is tuple when load_image_mode in (0,2) - ie deferred
+        orig_w, orig_h = cam_info.image
+    else:
+        orig_w, orig_h = cam_info.image.size
 
     if args.resolution in [1, 2, 4, 8, 16, 32, 64]:
         resolution = round(orig_w/(resolution_scale * args.resolution)), round(orig_h/(resolution_scale * args.resolution))
@@ -38,18 +41,35 @@ def loadCam(args, id, cam_info, resolution_scale):
         scale = float(global_down) * float(resolution_scale)
         resolution = (int(orig_w / scale), int(orig_h / scale))
 
-    resized_image_rgb = PILtoTorch(cam_info.image, resolution)
+    # from original code, load to memory    
+    if not isinstance(cam_info.image, tuple):
+        data_device = args.data_device
+        resized_image_rgb = PILtoTorch(cam_info.image, resolution)
 
-    gt_image = resized_image_rgb[:3, ...]
-    loaded_mask = None
+        gt_image = resized_image_rgb[:3, ...]
+        loaded_mask = None
 
-    if resized_image_rgb.shape[1] == 4:
-        loaded_mask = resized_image_rgb[3:4, ...]
+        if resized_image_rgb.shape[1] == 4:
+            loaded_mask = resized_image_rgb[3:4, ...]
+    else: # if image loading is deferred to on training loop or as h5 file, image is its shape
+        data_device = "cpu" # if using a dataloader set to cpu enable pin_memory
+        gt_image = _scale_shape(cam_info.image, args.resolution)
+        loaded_mask = None # defer query to on training loop
+        if tuple(resolution) != tuple(gt_image):
+            _m = f"loadCam(resolution_scale={resolution_scale} * args.resolution={args.resolution}"
+            _m = f"* image {cam_info.image} should equal {gt_image}, got {resolution}"
+            assert tuple(resolution) == tuple(gt_image), _m
 
-    return Camera(colmap_id=cam_info.uid, R=cam_info.R, T=cam_info.T, 
-                  FoVx=cam_info.FovX, FoVy=cam_info.FovY, 
+    return Camera(colmap_id=cam_info.uid, R=cam_info.R, T=cam_info.T,
+                  FoVx=cam_info.FovX, FoVy=cam_info.FovY,
                   image=gt_image, gt_alpha_mask=loaded_mask,
-                  image_name=cam_info.image_name, uid=id, data_device=args.data_device)
+                  image_name=cam_info.image_name, uid=id, data_device=data_device)
+
+def _scale_shape(shape, div=2):
+    shape = list(shape)
+    for i, a in enumerate(shape):
+        shape[i] = a if a in (1,3,4) else round(a/div)
+    return shape
 
 def cameraList_from_camInfos(cam_infos, resolution_scale, args):
     camera_list = []
